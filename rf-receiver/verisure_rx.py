@@ -4,17 +4,20 @@
 # By Jerome Nokin (http://funoverip.net / @funoverip)
 #=============================================================
 #
-# Usage: securitas_rx.py [-k KEY]
+# Usage: verisure_rx.py [-k KEY]
 #
 # optional arguments:
 #       -k,--key <KEY>     Optional AES-128 Key (hexadecimal)
 #
 #=============================================================
 
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'lib'))
+
 import ctypes
-import sys
 import datetime
 import argparse
+from aes_cbc                import aes_cbc
 from grc.verisure_demod     import verisure_demod
 from threading              import Thread
 from Crypto.Cipher          import AES
@@ -40,45 +43,30 @@ class flowgraph_thread(Thread):
         self._flowgraph.Run()
 	#print "FFT Closed/Killed"
 
-# AES decryption
-BS    = 16
-pad   = lambda s : s + (BS - len(s) % BS) * chr(BS - len(s) % BS)
-unpad = lambda s : s[0:-ord(s[-1])]
-def aes_decrypt(ciphertext, iv, key, padding=True):
-	
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    plaintext = cipher.decrypt(ciphertext)
-    if padding:
-        return unpad(plaintext)
-    else:
-        return plaintext
-
-
-
 # Generate timestamp
 def get_time():
     current_time = datetime.datetime.now().time()
     return current_time.isoformat()
 
 # Print out frames to stdout
-def dump_frame(frame, aes_iv = None, aes_key = None):
+def dump_frame(frame, aes):
 
     # Dissecting frame
     pkt_len = hexlify(frame[0:1])
     unkn1   = hexlify(frame[1:2])
     seqnr	= hexlify(frame[2:3])
-    src_id	= "".join(hexlify(n) for n in frame[3:7])
-    dst_id	= "".join(hexlify(n) for n in frame[7:11])
+    src_id	= hexlify(frame[3:7])
+    dst_id	= hexlify(frame[7:11])
     data	= ""
 
     # Payload is a block of 16b and AES key provided ? Try to decrypt it
-    if  (ord(unhexlify(pkt_len))-2-8) % 16 == 0 and aes_iv!=None and aes_key!=None:
+    if  (ord(unhexlify(pkt_len))-2-8) % 16 == 0 and aes!=None:
         if unkn1 == '\x04':
             # block is 16b without additional padding
-            data    = " ".join(hexlify(n) for n in aes_decrypt(frame[11:], aes_iv, aes_key, False))	
+            data    = " ".join(hexlify(n) for n in aes.decrypt(frame[11:],  False)) 
         else:
             # block is 16b with padding
-            data	= " ".join(hexlify(n) for n in aes_decrypt(frame[11:], aes_iv, aes_key))
+            data	= " ".join(hexlify(n) for n in aes.decrypt(frame[11:]))
         if len(data) ==0:
             data = "<empty> Wrong EAS key ?"
     else:
@@ -91,8 +79,8 @@ def dump_frame(frame, aes_iv = None, aes_key = None):
 # Main entry point
 if __name__ == '__main__':
 
-    aes_iv  = unhexlify("00000000000000000000000000000000")
-    aes_key = None
+    # Crypto object
+    aes = None
 
     if sys.platform.startswith('linux'):
         try:
@@ -114,8 +102,10 @@ if __name__ == '__main__':
         aes_key = args.key
         aes_key = ''.join(aes_key.split())
         aes_key = unhexlify(aes_key)
+        aes_iv  = unhexlify("00000000000000000000000000000000")
         print "[%s] AES-128 IV : %s" % (get_time(), hexlify(aes_iv))
         print "[%s] AES-128 key: %s" % (get_time(), hexlify(aes_key))
+        aes = aes_cbc(aes_iv, aes_key)
 
     # current frequency
     freq = 0
@@ -139,7 +129,7 @@ if __name__ == '__main__':
             if flowgraph.myqueue.count() <= 0:
                 break;
             frame = flowgraph.myqueue.delete_head_nowait().to_string()
-            dump_frame(frame, aes_iv, aes_key)
+            dump_frame(frame, aes)
 
         # I can't exit the script because of a blocking call to "myqueue.delete_head()". So for now..
         sleep(0.1)
